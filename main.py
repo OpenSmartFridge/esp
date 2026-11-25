@@ -11,13 +11,27 @@ PASSWORD = ""
 URL = "https:///api/get_products_with_key"
 KEY = ""
 CRONS = [
-    "*/10 * * * * *",
-    "0 0 12 * * *",
+    "0 0 8 * * *",
+    "0 0 18 * * *",
 ]
 
 wlan = network.WLAN(network.STA_IF)
 always_on = Pin(32, Pin.OUT, value=1)
 warning = Pin(33, Pin.OUT, value=0)
+button = Pin(35, Pin.IN)
+manual_fetch_requested = False
+last_button_press = None
+
+
+def button_irq(pin):
+    global manual_fetch_requested, last_button_press
+    now = time.ticks_ms()
+    if last_button_press is None or time.ticks_diff(now, last_button_press) >= 250:
+        last_button_press = now
+        manual_fetch_requested = True
+
+
+button.irq(trigger=Pin.IRQ_RISING, handler=button_irq)
 
 
 def connect():
@@ -49,7 +63,15 @@ def products():
             headers={"Content-Type": "application/json"},
         )
         print("API:", response.status_code)
-        return response.json() if response.status_code == 200 else []
+        if response.status_code != 200:
+            return []
+        items = response.json()
+        if items is None:
+            return []
+        if not isinstance(items, list):
+            print("API: Ungültiges Antwortformat")
+            return []
+        return items
     except Exception as error:
         print(error)
         return []
@@ -141,8 +163,18 @@ while True:
         if synced:
             now = time.gmtime(time.time())
             current = now[:6]
-            if cron_match() and current != last_check:
+            scheduled_fetch = cron_match() and current != last_check
+            if scheduled_fetch:
                 last_check = current
+            if manual_fetch_requested:
+                manual_fetch_requested = False
+                fetch_reason = "GPIO35"
+            elif scheduled_fetch:
+                fetch_reason = "Cron UTC " + str(current)
+            else:
+                fetch_reason = None
+            if fetch_reason:
+                print("Fetch-Auslöser:", fetch_reason)
                 items = products()
                 print("Produkte:", len(items))
                 if expiring(items):
